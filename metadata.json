@@ -1,0 +1,8 @@
+{
+  "name": "Safety & Health Calender",
+  "description": "An application featuring a secure ID and numeric PIN-based authentication system with Firebase Custom Auth.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,18 @@
+const fs = require('fs');
+const envContent = `FIREBASE_PROJECT_ID="safety-n-health-calender"
+FIREBASE_CLIENT_EMAIL="firebase-adminsdk-fbsvc@safety-n-health-calender.iam.gserviceaccount.com"
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDFL8fAii+N7e2H\\nVKj3H7kigytVRQ/1hhhBXtYEBfIRltEelP2uIvz3Gj0pwaY2kkdRjFQAVtFb/5UC\\nnS0307kiMuALLLp76BAcWJxT5joGnhuB2ugH78AJ+C68FqsSVXpPA+2w19woQts4\\n8k5pTDDK/jxUCyA7IZoiULR2dSb1Bnxib9hBNuj8vxkfqGWYKOvVPtFOrIYLFwqR\\nAkPT44JppVGgImu95xKak6U7gZL8M2gArKAwv+/iUWQR/Sj8Wc/apmo9mqyNkICE\\nNLlmr36hagYGRbBQvh4FHqehsonwi3b1Q6bbL38BhJg4v64h5zZqW/eAksbNm47n\\n53OHG+dHAgMBAAECggEAH+2/2U2RgVinL1Rw3uxcP2+K2uNJwBam+HV2j682G6Kr\\n7i5E3LyzRlW8KqCTHTSsEf3NdO1EjYeB0CsK29vPbJoH93dAzk3CHLznue7GXYpI\\nvPWTwFk8uMCJh2Y07CKQIURAaXQCejhyeTLu/xOEYRIv9ZHZoF7YBOTEMTGAuIg7\\n8+OZFZvdlBs8VkJWpxnnmA72uam8VMTxf8wkmCKEgiErnS7hhRjaQ+va6ng4W3mt\\n+bLP5b/qLJqOMLrgm4IX7lnyTxHmRnabQpiIXEIF2qFhvGvsp4fZK7D4aWc9lXGn\\nJxg1qxFxliVYx/WVyN/mHPxQIELKWvqxjr5EMjxfHQKBgQDtW6A3VhVV78pP7Jj1\\nEs92b0t/xErl5fE4nGi4U1pEcNF75mBzY99ABJs1B6dPXpc9hjzcaT6ih1Dsw2wC\\nAGjvlIpQtkvfqw8ITjty3cfd8b3TDNGbhnRsqyqkyxf5QiblmTniCc3KI3x82iFH\\nEhVQyy92Fk2bf5sSAdMOFsaUIwKBgQDUrHYc8W3A5yqYjbKyZ7AF3Jxu3T+O/zCl\\nNSkGbWYnfi5DCgCYXeXCQFPKtDiiJiB9yRLs2lzO8wBuSSIpYAv07OPa0FJ4jfhS\\nvMJ0a3CsajKmRJBO+XAse8BkKWCr/0l5Zf4dVpmMxFt3FfLKYJc5QB1t6cBkTaB2\\nG/8/va9wjQKBgHRKWPPjpC5nfnqsE8C2x5hiLN5bYMrEXuv6jcAJbodrsub+VzER\\ntHacCyLvLgTP9k95bmYa1kow+/AUSt2sL715zE6BEilymLncAnpjuKG/5934QNXv\\nCSmYrxrwOj2wMHh7GwXpAb9QpZRSFs3ISVM9SXKUuM8/tM0cwbf8Zqx7AoGASODY\\nkM6C58nPpPtZsx0pCrkwuiUDNMNqLhLrfhJbIUlyHPL+hTgYFdrpW9sqVRZvp+sR\\nmyyxBRHsod5Z4IfTURkkc8VTnZA4+lFI6ZAvykWSGbwBH68Gq5e0tB4hzI7s5Lb4\\nv6D/eWeIWGSjEIrNB4dbDmE91qFrTU4GyBb+WbkCgYAYYCJpELZ5f85VW5277zPm\\n6g8vaGsOJXHuf0VapZyt/IBAGKQdkkgN6AHZXrOxNp9uretqEELMJA6lQGT6yFq4\\nSvs0EkuTjUTafV9AcJ3bvbAh668htIoP/dR7dR8WQrP7ELrOCyEsaWUEUPRqKsDJ\\ncxpDIrUJAn6A87SZO/rDYw==\\n-----END PRIVATE KEY-----\\n"
+FIREBASE_STORAGE_BUCKET="safety-n-health-calender.firebasestorage.app"
+FIREBASE_WEB_API_KEY="AIzaSyDZOI1xMviL5k1eIK8IjggCLYZ0HLT7d8k"
+VITE_FIREBASE_API_KEY="AIzaSyDZOI1xMviL5k1eIK8IjggCLYZ0HLT7d8k"
+VITE_FIREBASE_AUTH_DOMAIN="safety-n-health-calender.firebaseapp.com"
+VITE_FIREBASE_PROJECT_ID="safety-n-health-calender"
+VITE_FIREBASE_STORAGE_BUCKET="safety-n-health-calender.firebasestorage.app"
+VITE_FIREBASE_MESSAGING_SENDER_ID="684990652441"
+VITE_FIREBASE_APP_ID="1:684990652441:web:eaf8ed5d2e1ad5f52c4a88"
+VITE_FIREBASE_MEASUREMENT_ID="G-869P0PG9XZ"
+PIN_PEPPER="dev_pepper_random_string_xyz"
+PIN_LENGTH="6"
+`;
+fs.writeFileSync('.env', envContent);
+console.log('.env generated successfully');

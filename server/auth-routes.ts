@@ -24,18 +24,80 @@ function checkRateLimit(ip: string): boolean {
   return true;
 }
 
+// 아이디 중복 확인 엔드포인트
+authRouter.get('/check-username', async (req, res) => {
+  try {
+    if (!db) throw new Error("Firebase is not initialized");
+    const rawUsername = ((req.query.username as string) || '').trim();
+    if (!rawUsername) {
+      return res.status(400).json({ available: false, message: "아이디를 입력해주세요." });
+    }
+
+    const normalizedUsername = rawUsername.toLowerCase();
+    if (normalizedUsername.length < 4) {
+      return res.status(400).json({ available: false, message: "아이디는 4자 이상이어야 합니다." });
+    }
+
+    if (!/^[a-zA-Z0-9_-]+$/.test(rawUsername)) {
+      return res.status(400).json({ available: false, message: "아이디는 영문, 숫자, 밑줄(_), 하이픈(-)만 사용할 수 있습니다." });
+    }
+
+    // 1. usernames 컬렉션 확인
+    const usernameDoc = await db.collection('usernames').doc(normalizedUsername).get();
+    if (usernameDoc.exists) {
+      return res.json({ available: false, message: "이미 사용 중인 아이디입니다." });
+    }
+
+    // 2. users 컬렉션 전수 확인 (대소문자 무관 중복 방지)
+    const usersSnapshot = await db.collection('users').get();
+    let alreadyTaken = false;
+    usersSnapshot.forEach((doc: any) => {
+      const u = doc.data();
+      if (u && (u.username || '').trim().toLowerCase() === normalizedUsername) {
+        alreadyTaken = true;
+      }
+    });
+
+    if (alreadyTaken) {
+      return res.json({ available: false, message: "이미 사용 중인 아이디입니다." });
+    }
+
+    return res.json({ available: true, message: "사용 가능한 아이디입니다." });
+  } catch (error: any) {
+    console.error('Check username error:', error);
+    res.status(500).json({ error: error.message || "아이디 중복 확인 중 오류가 발생했습니다." });
+  }
+});
+
 authRouter.post('/register', async (req, res) => {
   try {
     if (!db || !auth) throw new Error("Firebase is not initialized");
 
-    const { username, pin, pinConfirm } = req.body;
+    const { username, pin, pinConfirm, name, organization, phoneNumber } = req.body;
     if (!username || !pin || !pinConfirm) {
       return res.status(400).json({ error: "아이디와 PIN을 모두 입력해주세요." });
+    }
+
+    if (!name || name.trim().length < 2) {
+      return res.status(400).json({ error: "이름을 2자 이상 입력해주세요." });
+    }
+
+    if (!organization || organization.trim().length < 2) {
+      return res.status(400).json({ error: "소속(회사/부서명)을 입력해주세요." });
+    }
+
+    const cleanPhone = (phoneNumber || '').replace(/[^0-9]/g, '');
+    if (cleanPhone.length < 10 || cleanPhone.length > 11) {
+      return res.status(400).json({ error: "올바른 휴대폰번호를 입력해주세요. (예: 010-1234-5678)" });
     }
 
     const normalizedUsername = username.trim().toLowerCase();
     if (normalizedUsername.length < 4) {
       return res.status(400).json({ error: "아이디는 4자 이상이어야 합니다." });
+    }
+
+    if (!/^[a-zA-Z0-9_-]+$/.test(username.trim())) {
+      return res.status(400).json({ error: "아이디는 영문, 숫자, 밑줄(_), 하이픈(-)만 사용할 수 있습니다." });
     }
 
     if (pin !== pinConfirm) {
@@ -49,10 +111,23 @@ authRouter.post('/register', async (req, res) => {
 
     const usernameRef = db.collection('usernames').doc(normalizedUsername);
 
-    // 1. Check if username already exists
+    // 1. usernames 컬렉션에서 중복 여부 확인
     const existingDoc = await usernameRef.get();
     if (existingDoc.exists) {
-      return res.status(400).json({ error: "이미 존재하는 아이디입니다." });
+      return res.status(400).json({ error: "이미 존재하는 아이디입니다. 다른 아이디를 입력해주세요." });
+    }
+
+    // 2. users 컬렉션에서도 중복 여부 전수 확인 (대소문자 무관)
+    const usersSnapshot = await db.collection('users').get();
+    let alreadyTaken = false;
+    usersSnapshot.forEach((doc: any) => {
+      const u = doc.data();
+      if (u && (u.username || '').trim().toLowerCase() === normalizedUsername) {
+        alreadyTaken = true;
+      }
+    });
+    if (alreadyTaken) {
+      return res.status(400).json({ error: "이미 존재하는 아이디입니다. 다른 아이디를 입력해주세요." });
     }
 
     const tenantId = `tenant_${Date.now()}`;
@@ -80,6 +155,9 @@ authRouter.post('/register', async (req, res) => {
         uid,
         tenantId,
         username: normalizedUsername,
+        name: name.trim(),
+        organization: organization.trim(),
+        phoneNumber: cleanPhone,
         role: 'USER',
         status,
         mustChangePin: false,
@@ -367,5 +445,183 @@ authRouter.post('/change-pin', requireFirebaseSession, async (req, res) => {
   } catch (error) {
     console.error('Change PIN error:', error);
     res.status(500).json({ error: "PIN 변경 중 오류가 발생했습니다." });
+  }
+});
+
+// 아이디 찾기 (이름, 소속, 휴대폰번호 일치 확인)
+authRouter.post('/find-id', async (req, res) => {
+  try {
+    if (!db) throw new Error("Firebase is not initialized");
+    const { name, organization, phoneNumber } = req.body;
+
+    if (!name || !organization || !phoneNumber) {
+      return res.status(400).json({ error: "이름, 소속, 휴대폰번호를 모두 입력해주세요." });
+    }
+
+    const trimmedName = name.trim();
+    const trimmedOrg = organization.trim().toLowerCase();
+    const cleanPhone = (phoneNumber || '').replace(/[^0-9]/g, '');
+
+    const usersSnapshot = await db.collection('users').get();
+    let matchedUser: any = null;
+
+    usersSnapshot.forEach((doc: any) => {
+      const u = doc.data();
+      if (!u) return;
+      const uName = (u.name || '').trim();
+      const uOrg = (u.organization || '').trim().toLowerCase();
+      const uPhone = (u.phoneNumber || '').replace(/[^0-9]/g, '');
+
+      if (uName === trimmedName && uOrg === trimmedOrg && uPhone === cleanPhone) {
+        matchedUser = u;
+      }
+    });
+
+    if (!matchedUser) {
+      return res.status(404).json({ error: "일치하는 회원 정보를 찾을 수 없습니다. 이름, 소속, 휴대폰번호를 다시 확인해주세요." });
+    }
+
+    const username = matchedUser.username;
+    const masked = username.length > 3 
+      ? username.slice(0, 2) + '*'.repeat(username.length - 3) + username.slice(-1)
+      : username.slice(0, 1) + '*'.repeat(username.length - 1);
+
+    res.json({
+      success: true,
+      username: matchedUser.username,
+      maskedUsername: masked,
+      name: matchedUser.name,
+      organization: matchedUser.organization,
+      createdAt: matchedUser.createdAt
+    });
+  } catch (error: any) {
+    console.error('Find ID error:', error);
+    res.status(500).json({ error: error.message || "아이디 찾기 중 오류가 발생했습니다." });
+  }
+});
+
+// PIN 재설정을 위한 본인 확인 (아이디 + 이름 + 소속 + 휴대폰번호)
+authRouter.post('/verify-identity', async (req, res) => {
+  try {
+    if (!db) throw new Error("Firebase is not initialized");
+    const { username, name, organization, phoneNumber } = req.body;
+
+    if (!username || !name || !organization || !phoneNumber) {
+      return res.status(400).json({ error: "아이디, 이름, 소속, 휴대폰번호를 모두 입력해주세요." });
+    }
+
+    const normalizedUsername = username.trim().toLowerCase();
+    const trimmedName = name.trim();
+    const trimmedOrg = organization.trim().toLowerCase();
+    const cleanPhone = (phoneNumber || '').replace(/[^0-9]/g, '');
+
+    const usernameDoc = await db.collection('usernames').doc(normalizedUsername).get();
+    if (!usernameDoc.exists) {
+      return res.status(404).json({ error: "일치하는 회원 정보를 찾을 수 없습니다." });
+    }
+
+    const { uid } = usernameDoc.data()!;
+    const userDoc = await db.collection('users').doc(uid).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "일치하는 회원 정보를 찾을 수 없습니다." });
+    }
+
+    const u = userDoc.data()!;
+    const uName = (u.name || '').trim();
+    const uOrg = (u.organization || '').trim().toLowerCase();
+    const uPhone = (u.phoneNumber || '').replace(/[^0-9]/g, '');
+
+    if (uName !== trimmedName || uOrg !== trimmedOrg || uPhone !== cleanPhone) {
+      return res.status(400).json({ error: "입력하신 정보(이름, 소속, 휴대폰번호)가 등록된 계정 정보와 일치하지 않습니다." });
+    }
+
+    res.json({ success: true, message: "본인 확인이 완료되었습니다." });
+  } catch (error: any) {
+    console.error('Verify identity error:', error);
+    res.status(500).json({ error: "본인 확인 중 오류가 발생했습니다." });
+  }
+});
+
+// PIN 재설정 (본인 확인 정보 검증 후 새 PIN 저장)
+authRouter.post('/reset-pin', async (req, res) => {
+  try {
+    if (!db) throw new Error("Firebase is not initialized");
+    const { username, name, organization, phoneNumber, newPin, newPinConfirm } = req.body;
+
+    if (!username || !name || !organization || !phoneNumber || !newPin || !newPinConfirm) {
+      return res.status(400).json({ error: "모든 항목을 입력해주세요." });
+    }
+
+    if (newPin !== newPinConfirm) {
+      return res.status(400).json({ error: "새 PIN 확인값이 일치하지 않습니다." });
+    }
+
+    const normalizedUsername = username.trim().toLowerCase();
+    const pinError = validatePinFormat(newPin, normalizedUsername);
+    if (pinError) {
+      return res.status(400).json({ error: pinError });
+    }
+
+    const trimmedName = name.trim();
+    const trimmedOrg = organization.trim().toLowerCase();
+    const cleanPhone = (phoneNumber || '').replace(/[^0-9]/g, '');
+
+    const usernameDoc = await db.collection('usernames').doc(normalizedUsername).get();
+    if (!usernameDoc.exists) {
+      return res.status(404).json({ error: "일치하는 회원 정보를 찾을 수 없습니다." });
+    }
+
+    const { uid } = usernameDoc.data()!;
+    const userDoc = await db.collection('users').doc(uid).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "일치하는 회원 정보를 찾을 수 없습니다." });
+    }
+
+    const u = userDoc.data()!;
+    const uName = (u.name || '').trim();
+    const uOrg = (u.organization || '').trim().toLowerCase();
+    const uPhone = (u.phoneNumber || '').replace(/[^0-9]/g, '');
+
+    if (uName !== trimmedName || uOrg !== trimmedOrg || uPhone !== cleanPhone) {
+      return res.status(400).json({ error: "입력하신 정보(이름, 소속, 휴대폰번호)가 등록된 계정 정보와 일치하지 않습니다." });
+    }
+
+    const salt = generateSalt();
+    const pinHash = hashPin(newPin, salt);
+
+    const credsRef = db.collection('authCredentials').doc(uid);
+    const credsDoc = await credsRef.get();
+    const credsData = credsDoc.exists ? credsDoc.data() : {};
+
+    await credsRef.set({
+      uid,
+      pinHash,
+      pinSalt: salt,
+      pinAlgorithm: "scrypt",
+      pinVersion: (credsData?.pinVersion || 1) + 1,
+      credentialVersion: (credsData?.credentialVersion || 1) + 1,
+      failedLoginCount: 0,
+      lockedUntil: null,
+      lastPinChangedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+
+    await db.collection('users').doc(uid).update({
+      mustChangePin: false,
+      updatedAt: new Date().toISOString()
+    });
+
+    try {
+      if (auth.revokeRefreshTokens) {
+        await auth.revokeRefreshTokens(uid);
+      }
+    } catch {
+      // Ignore if in local mode
+    }
+
+    res.json({ success: true, message: "PIN 번호가 성공적으로 재설정되었습니다. 새 PIN으로 로그인해주세요." });
+  } catch (error: any) {
+    console.error('Reset PIN error:', error);
+    res.status(500).json({ error: error.message || "PIN 재설정 중 오류가 발생했습니다." });
   }
 });

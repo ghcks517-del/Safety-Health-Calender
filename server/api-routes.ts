@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db, auth } from "./firebase-admin.js";
 import { requireFirebaseSession, requireAdminSession } from "./auth-middleware.js";
-import { v4 as uuidv4 } from "uuid"; // wait, uuid is not installed? I'll just use Firestore's auto-id or install it. I'll use Firestore auto id: db.collection().doc()
+import { getEmailConfigStatus, sendNotificationEmail } from "./email-service.js";
 
 export const apiRouter = Router();
 
@@ -33,7 +33,9 @@ apiRouter.post('/settings/company', requireFirebaseSession, async (req: any, res
 apiRouter.get('/settings/notifications', requireFirebaseSession, async (req: any, res) => {
   try {
     const doc = await db.collection('notificationSettings').doc(req.user.tenantId).get();
-    res.json(doc.exists ? doc.data() : { emails: [], useEmail: false, defaultReminderDays: ['7', '1'] });
+    const settings = doc.exists ? doc.data() : { emails: [], useEmail: false, defaultReminderDays: ['7', '3', '1'], notifyOnDelay: true };
+    const emailConfig = getEmailConfigStatus();
+    res.json({ ...settings, emailConfig });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -41,14 +43,61 @@ apiRouter.get('/settings/notifications', requireFirebaseSession, async (req: any
 
 apiRouter.post('/settings/notifications', requireFirebaseSession, async (req: any, res) => {
   try {
-    const { emails, useEmail, defaultReminderDays } = req.body;
+    const { emails, useEmail, defaultReminderDays, notifyOnDelay, notifyCategories } = req.body;
     await db.collection('notificationSettings').doc(req.user.tenantId).set({
       emails: emails || [],
       useEmail: !!useEmail,
-      defaultReminderDays: defaultReminderDays || ['7', '1'],
+      defaultReminderDays: defaultReminderDays || ['7', '3', '1'],
+      notifyOnDelay: notifyOnDelay !== false,
+      notifyCategories: notifyCategories || ['교육', '점검', '비상훈련', '시스템 운영', '기타'],
       updatedAt: new Date().toISOString()
     }, { merge: true });
     res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.post('/settings/notifications/test-email', requireFirebaseSession, async (req: any, res) => {
+  try {
+    const { targetEmail } = req.body;
+    if (!targetEmail) {
+      return res.status(400).json({ error: '수신 이메일 주소를 입력해주세요.' });
+    }
+
+    const result = await sendNotificationEmail({
+      to: targetEmail,
+      subject: '[Safety & Health Calender] 안전보건활동 알림 서비스 테스트 메일',
+      html: `
+        <div style="font-family: 'Apple SD Gothic Neo', Pretendard, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #fed7aa; border-radius: 12px; background: #ffffff;">
+          <div style="border-bottom: 2px solid #f97316; padding-bottom: 12px; margin-bottom: 20px;">
+            <h2 style="color: #ea580c; margin: 0; font-size: 20px;">Safety & Health Calender</h2>
+            <p style="color: #64748b; font-size: 13px; margin: 4px 0 0;">안전보건활동 운영 관리 시스템 자동 알림</p>
+          </div>
+          <p style="font-size: 15px; color: #1e293b; line-height: 1.6;">
+            안녕하세요! <strong>Safety & Health Calender</strong> 이메일 알림 연동 테스트 메일입니다.
+          </p>
+          <div style="background: #fff7ed; border: 1px solid #fdba74; padding: 16px; border-radius: 8px; margin: 20px 0;">
+            <p style="color: #9a3412; font-weight: bold; margin: 0 0 8px; font-size: 14px;">[예시] D-7일 도래 예정 안전보건활동 안내</p>
+            <ul style="color: #431407; margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.8;">
+              <li><strong>활동명:</strong> 3분기 현장 정기안전점검</li>
+              <li><strong>분야:</strong> 점검</li>
+              <li><strong>예정일:</strong> 7일 후 예정</li>
+              <li><strong>법적 기준:</strong> 산업안전보건법 제64조</li>
+            </ul>
+          </div>
+          <p style="font-size: 13px; color: #475569; line-height: 1.6;">
+            이 메일이 정상적으로 수신되었다면, 앞으로 등록된 캘린더 일정의 D-7, D-3, D-1일 및 지연 발생 시 알림을 받으실 수 있습니다.
+          </p>
+          <div style="border-top: 1px solid #e2e8f0; padding-top: 12px; margin-top: 24px; font-size: 11px; color: #94a3b8;">
+            본 메일은 안전보건활동 캘린더 시스템 설정에서 발송된 테스트 메일입니다.
+          </div>
+        </div>
+      `,
+      text: 'Safety & Health Calender 알림 연동 테스트 메일입니다. 본 메일이 수신되면 활동 임박 및 지연 알림을 정상적으로 받으실 수 있습니다.'
+    });
+
+    res.json(result);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -146,31 +195,95 @@ apiRouter.post('/activities', requireFirebaseSession, async (req: any, res) => {
     const batch = db.batch();
     batch.set(planRef, planData);
 
-    // If it's a one-time event, create 1 occurrence
-    // If it's repeating (e.g. monthly), create 12 occurrences
-    // For simplicity, let's create a single occurrence if '1회'
-    // or if not specified, default to 1 occurrence
-    const occurrenceDates = [];
-    if (repeatCycle === '매월') {
+    // 회차별 발생 일정 목록 결정 (분기: 4회, 반기: 2회, 매월: 12회, 1회: 1회)
+    const occurrencesToCreate: Array<{ round: number; label: string; date: string | null }> = [];
+
+    if (Array.isArray(req.body.customOccurrences) && req.body.customOccurrences.length > 0) {
+      req.body.customOccurrences.forEach((item: any, idx: number) => {
+        if (item && item.date) {
+          occurrencesToCreate.push({
+            round: item.round || idx + 1,
+            label: item.label || `${idx + 1}차`,
+            date: item.date
+          });
+        }
+      });
+    } else if (Array.isArray(req.body.plannedDates) && req.body.plannedDates.length > 0) {
+      req.body.plannedDates.forEach((d: string, idx: number) => {
+        if (d) {
+          occurrencesToCreate.push({
+            round: idx + 1,
+            label: `${idx + 1}차`,
+            date: d
+          });
+        }
+      });
+    } else if (repeatCycle === '매월') {
       for (let i = 1; i <= 12; i++) {
-        const d = new Date(planYear, i - 1, 15).toISOString().split('T')[0];
-        occurrenceDates.push(d);
+        const mm = String(i).padStart(2, '0');
+        occurrencesToCreate.push({
+          round: i,
+          label: `${i}차`,
+          date: `${planYear}-${mm}-15`
+        });
+      }
+    } else if (repeatCycle === '분기' || repeatCycle === '분기별') {
+      const qMonths = ['03', '06', '09', '12'];
+      for (let i = 0; i < 4; i++) {
+        occurrencesToCreate.push({
+          round: i + 1,
+          label: `${i + 1}차`,
+          date: `${planYear}-${qMonths[i]}-20`
+        });
+      }
+    } else if (repeatCycle === '반기' || repeatCycle === '반기별') {
+      const hMonths = ['06', '12'];
+      for (let i = 0; i < 2; i++) {
+        occurrencesToCreate.push({
+          round: i + 1,
+          label: `${i + 1}차`,
+          date: `${planYear}-${hMonths[i]}-20`
+        });
       }
     } else {
-      occurrenceDates.push(plannedDate || null);
+      occurrencesToCreate.push({
+        round: 1,
+        label: '1차',
+        date: plannedDate || null
+      });
     }
 
-    occurrenceDates.forEach(date => {
+    // 만약 customOccurrences에서 유효한 일자가 없을 때 fallback
+    if (occurrencesToCreate.length === 0) {
+      occurrencesToCreate.push({
+        round: 1,
+        label: '1차',
+        date: plannedDate || null
+      });
+    }
+
+    occurrencesToCreate.forEach(occ => {
       const occRef = db.collection('activityOccurrences').doc();
+      const nameWithRound = occurrencesToCreate.length > 1 && !name.includes(occ.label)
+        ? `${name} (${occ.label})`
+        : (name || '');
+
       batch.set(occRef, {
         tenantId: req.user.tenantId,
         planId,
-        name: name || '',
+        round: occ.round,
+        roundLabel: occ.label,
+        name: nameWithRound,
+        baseName: name || '',
         category: category || '',
-        plannedDate: date,
-        plannedMonth: date ? date.substring(0, 7) : (plannedMonth || null),
-        planYear: planYear || '',
+        repeatCycle: repeatCycle || '1회',
+        plannedDate: occ.date,
+        plannedMonth: occ.date ? occ.date.substring(0, 7) : (plannedMonth || null),
+        planYear: planYear || (occ.date ? occ.date.substring(0, 4) : ''),
         assignee: assignee || null,
+        priority: priority || '보통',
+        lawBasis: lawBasis || null,
+        details: details || null,
         status: '계획', // To be re-calculated based on current date
         deletedAt: null,
         completedAt: null

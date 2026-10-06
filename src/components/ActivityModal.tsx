@@ -1,7 +1,78 @@
 import React, { useState, useEffect } from 'react';
-import { X, Calendar as CalendarIcon, ClipboardList, Info, Sparkles, BookOpen, ShieldAlert, Edit2, Layers, CheckCircle2 } from 'lucide-react';
+import { X, Calendar as CalendarIcon, ClipboardList, Info, Sparkles, BookOpen, ShieldAlert, Edit2, Layers, CheckCircle2, RotateCcw } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { COMPLIANCE_STANDARDS, SAFETY_CATEGORIES, ComplianceStandard, ComplianceSubOption } from '../lib/safetyComplianceData';
+
+export interface RoundConfig {
+  round: number;
+  label: string;
+  period: string;
+  defaultMonth: number;
+  defaultDay: number;
+  defaultDate: string;
+}
+
+export function normalizeRepeatCycle(cycle?: string): '1회' | '매월' | '분기' | '반기' {
+  if (!cycle) return '1회';
+  if (cycle === '매월' || cycle.startsWith('매월')) return '매월';
+  if (cycle.includes('분기')) return '분기';
+  if (cycle.includes('반기')) return '반기';
+  return '1회';
+}
+
+export function getRoundsForCycle(cycle: string, planYear: string, baseDate?: string): RoundConfig[] {
+  const norm = normalizeRepeatCycle(cycle);
+  const year = parseInt(planYear || new Date().getFullYear().toString(), 10) || new Date().getFullYear();
+  
+  let baseDay = 20;
+  if (baseDate && /^\d{4}-\d{2}-\d{2}$/.test(baseDate)) {
+    const parts = baseDate.split('-');
+    const day = parseInt(parts[2], 10);
+    if (!isNaN(day) && day >= 1 && day <= 28) {
+      baseDay = day;
+    }
+  }
+
+  const makeDate = (m: number, d: number) => {
+    const mm = String(m).padStart(2, '0');
+    const dd = String(d).padStart(2, '0');
+    return `${year}-${mm}-${dd}`;
+  };
+
+  if (norm === '분기') {
+    return [
+      { round: 1, label: '1차', period: '1분기 (3월)', defaultMonth: 3, defaultDay: baseDay, defaultDate: makeDate(3, baseDay) },
+      { round: 2, label: '2차', period: '2분기 (6월)', defaultMonth: 6, defaultDay: baseDay, defaultDate: makeDate(6, baseDay) },
+      { round: 3, label: '3차', period: '3분기 (9월)', defaultMonth: 9, defaultDay: baseDay, defaultDate: makeDate(9, baseDay) },
+      { round: 4, label: '4차', period: '4분기 (12월)', defaultMonth: 12, defaultDay: baseDay, defaultDate: makeDate(12, baseDay) },
+    ];
+  }
+
+  if (norm === '반기') {
+    return [
+      { round: 1, label: '1차', period: '상반기 (6월)', defaultMonth: 6, defaultDay: baseDay, defaultDate: makeDate(6, baseDay) },
+      { round: 2, label: '2차', period: '하반기 (12월)', defaultMonth: 12, defaultDay: baseDay, defaultDate: makeDate(12, baseDay) },
+    ];
+  }
+
+  if (norm === '매월') {
+    const monthlyDay = Math.min(baseDay, 28);
+    const list: RoundConfig[] = [];
+    for (let m = 1; m <= 12; m++) {
+      list.push({
+        round: m,
+        label: `${m}차`,
+        period: `${m}월`,
+        defaultMonth: m,
+        defaultDay: monthlyDay,
+        defaultDate: makeDate(m, monthlyDay)
+      });
+    }
+    return list;
+  }
+
+  return [];
+}
 
 export default function ActivityModal({ 
   isOpen, 
@@ -16,7 +87,7 @@ export default function ActivityModal({
   initialTemplate?: ComplianceStandard | null;
   initialActivity?: any | null;
 }) {
-  const isEditMode = !!initialActivity;
+  const isEditMode = !!(initialActivity && initialActivity.id);
 
   const { register, handleSubmit, formState: { errors }, setValue, watch, reset } = useForm({
     defaultValues: {
@@ -33,16 +104,40 @@ export default function ActivityModal({
   });
 
   const selectedCategory = watch('category');
+  const watchRepeatCycle = watch('repeatCycle');
+  const watchPlanYear = watch('planYear');
+  const watchPlannedDate = watch('plannedDate');
+
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  // 회차별 날짜 선택 상태 (분기: 4회, 반기: 2회, 매월: 12회)
+  const [roundDates, setRoundDates] = useState<{ [round: number]: string }>({});
 
   // Template and sub-option selection state
   const [selectedStandardId, setSelectedStandardId] = useState<string>('');
   const [selectedStandard, setSelectedStandard] = useState<ComplianceStandard | null>(null);
   const [selectedSubOptionId, setSelectedSubOptionId] = useState<string>('');
 
-  // Filter templates by current category
-  const filteredTemplates = COMPLIANCE_STANDARDS.filter(s => s.category === selectedCategory);
+  // 반복주기나 계획연도 변경 시 회차별 기본 날짜 자동 세팅
+  useEffect(() => {
+    if (isEditMode) return;
+    const norm = normalizeRepeatCycle(watchRepeatCycle);
+    if (norm === '1회') return;
+
+    const rounds = getRoundsForCycle(watchRepeatCycle, watchPlanYear, watchPlannedDate);
+    setRoundDates(prev => {
+      const next: { [round: number]: string } = {};
+      rounds.forEach(r => {
+        if (prev[r.round] && prev[r.round].startsWith(watchPlanYear || '')) {
+          next[r.round] = prev[r.round];
+        } else {
+          next[r.round] = r.defaultDate;
+        }
+      });
+      return next;
+    });
+  }, [watchRepeatCycle, watchPlanYear, isEditMode]);
 
   const applyTemplate = (standard: ComplianceStandard) => {
     setValue('name', standard.name);
@@ -135,12 +230,27 @@ export default function ActivityModal({
     setSaving(true);
     setErrorMsg('');
     try {
+      const normCycle = normalizeRepeatCycle(data.repeatCycle);
+      const payload: any = { ...data };
+
+      if (!isEditMode && normCycle !== '1회') {
+        const rounds = getRoundsForCycle(data.repeatCycle, data.planYear || new Date().getFullYear().toString(), data.plannedDate);
+        const customOccurrences = rounds.map(r => ({
+          round: r.round,
+          label: r.label,
+          period: r.period,
+          date: roundDates[r.round] || r.defaultDate
+        }));
+        payload.customOccurrences = customOccurrences;
+        payload.plannedDate = customOccurrences[0]?.date || '';
+      }
+
       const url = isEditMode ? `/api/activities/${initialActivity.id}` : '/api/activities';
       const method = isEditMode ? 'PUT' : 'POST';
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(payload)
       });
       const result = await res.json();
       if (res.ok && (result.success !== false)) {
@@ -335,25 +445,19 @@ export default function ActivityModal({
                 일정 및 담당자
               </h4>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">계획 일자</label>
-                  <input 
-                    type="date" 
-                    {...register('plannedDate')}
-                    className="w-full px-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">반복 주기</label>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                    반복 주기 <span className="text-red-500">*</span>
+                  </label>
                   <select 
                     {...register('repeatCycle')}
-                    className="w-full px-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 bg-white"
+                    className="w-full px-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 bg-white font-bold text-slate-800"
                   >
-                    <option value="1회">1회</option>
-                    <option value="매월">매월 (12회 생성)</option>
-                    <option value="분기별">분기별 (4회 생성)</option>
-                    <option value="반기별">반기별 (2회 생성)</option>
+                    <option value="1회">1회 (단일 계획)</option>
+                    <option value="분기">분기 (총 4회: 1차, 2차, 3차, 4차)</option>
+                    <option value="반기">반기 (총 2회: 1차, 2차)</option>
+                    <option value="매월">매월 (총 12회: 1차 ~ 12차)</option>
                   </select>
                 </div>
                 <div>
@@ -368,6 +472,94 @@ export default function ActivityModal({
                   </select>
                 </div>
               </div>
+
+              {/* 1) 1회 단일 계획 또는 수정 모드인 경우 */}
+              {(isEditMode || normalizeRepeatCycle(watchRepeatCycle) === '1회') && (
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                    계획 일자 {isEditMode && <span className="text-xs font-normal text-slate-500">(선택된 활동 일자)</span>}
+                  </label>
+                  <input 
+                    type="date" 
+                    {...register('plannedDate')}
+                    className="w-full sm:w-1/2 px-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 font-mono"
+                  />
+                </div>
+              )}
+
+              {/* 2) 다회차 일정 (분기: 4회, 반기: 2회, 매월: 12회) 선택 시: 1차, 2차, 3차... 여러 날짜 선택 */}
+              {!isEditMode && normalizeRepeatCycle(watchRepeatCycle) !== '1회' && (
+                <div className="p-4 sm:p-5 bg-gradient-to-br from-orange-50/60 via-slate-50 to-orange-50/30 border-2 border-orange-300/80 rounded-2xl space-y-4 shadow-2xs">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-orange-200/80">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <CalendarIcon className="w-4 h-4 text-orange-600" />
+                        <span className="text-sm font-bold text-slate-900">
+                          {normalizeRepeatCycle(watchRepeatCycle) === '분기' && '분기별 계획일자 선택 (총 4회: 1차, 2차, 3차, 4차)'}
+                          {normalizeRepeatCycle(watchRepeatCycle) === '반기' && '반기별 계획일자 선택 (총 2회: 1차, 2차)'}
+                          {normalizeRepeatCycle(watchRepeatCycle) === '매월' && '월별 계획일자 선택 (총 12회: 1차 ~ 12차)'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        회차별 실행 예정일자를 지정해주세요. 등록 시 캘린더에 회차별({getRoundsForCycle(watchRepeatCycle, watchPlanYear).length}건)로 개별 일정이 자동 편성됩니다.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rounds = getRoundsForCycle(watchRepeatCycle, watchPlanYear);
+                        const next: { [round: number]: string } = {};
+                        rounds.forEach(r => { next[r.round] = r.defaultDate; });
+                        setRoundDates(next);
+                      }}
+                      className="px-2.5 py-1.5 bg-white hover:bg-orange-50 border border-orange-200 text-orange-700 text-xs font-bold rounded-lg transition-colors shadow-2xs flex items-center gap-1.5 shrink-0 cursor-pointer self-start sm:self-auto"
+                      title="기본 표준 일정으로 자동 채우기"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-orange-600" />
+                      <span>기본일정 자동 채우기</span>
+                    </button>
+                  </div>
+
+                  {/* 회차별 일자 입력 그리드 */}
+                  <div className={`grid gap-3 ${
+                    normalizeRepeatCycle(watchRepeatCycle) === '매월' 
+                      ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3' 
+                      : 'grid-cols-1 sm:grid-cols-2'
+                  }`}>
+                    {getRoundsForCycle(watchRepeatCycle, watchPlanYear, watchPlannedDate).map(r => (
+                      <div 
+                        key={r.round}
+                        className="p-3 bg-white rounded-xl border border-orange-200/90 hover:border-orange-400 transition-colors shadow-2xs space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-orange-100 text-orange-800 text-xs font-black">
+                            <span className="w-1.5 h-1.5 rounded-full bg-orange-500"></span>
+                            {r.label}
+                          </span>
+                          <span className="text-[11px] text-slate-500 font-medium">{r.period}</span>
+                        </div>
+                        <input
+                          type="date"
+                          value={roundDates[r.round] || r.defaultDate}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setRoundDates(prev => ({ ...prev, [r.round]: val }));
+                          }}
+                          className="w-full px-3 py-1.5 text-xs font-mono font-medium border border-slate-200 rounded-lg focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 bg-slate-50/50 text-slate-900"
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="pt-2 border-t border-orange-200/60 flex items-center justify-between text-xs text-slate-600">
+                    <span>💡 각 회차의 일자를 달력에서 직접 수정하실 수 있습니다.</span>
+                    <span className="font-bold text-orange-700">
+                      총 {getRoundsForCycle(watchRepeatCycle, watchPlanYear).length}개 회차 등록 예정
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">담당자</label>
